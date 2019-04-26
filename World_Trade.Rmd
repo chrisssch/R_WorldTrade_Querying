@@ -1,0 +1,200 @@
+---
+title: "World Trade"
+author: "Christoph Schauer"
+date: "12 May 2018"
+output: html_document
+---
+
+## Introduction
+
+International Trade was one of my favorite subjects in my economics studies, and product-level trade data lends itself well for practicing data wrangling and querying in a SQL-like fashion with the dplyr package.
+
+Later, I'll also estimate a [gravity model](https://en.wikipedia.org/wiki/Gravity_model_of_trade) using this data combined with distance data from CEPII's [GeoDist database](http://www.cepii.fr/CEPII/en/bdd_modele/presentation.asp?id=6). (TBD)
+
+## Data
+
+Trade data was downloaded from the [UN Comtrade Database](https://comtrade.un.org/data). The final trade data set contains import and export volumes of 96 product categories ([HS2 classification](https://en.wikipedia.org/wiki/Harmonized_System) in USD for all countries (reporter) to/from all trade partner countries (partner) in the year 2016. As data is not available for all countries, the data set includes trade data of 144 of the almost 250 countries and territories, with about 920,000 observations of pairwise trade flows in total.
+
+GDP data for 2016 was downloaded from the UN Statistics division and is used in some queries.
+
+## Load required packages
+
+```{r, message = FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+```
+
+## Load data
+
+### Trade data 
+
+The data for each reporting country were downloaded as csv-files. The following code reads all these files from a local folder, extracts the relevant columns, and transforms the data into a clean format.
+
+```{r, message = FALSE}
+filelist = list.files("Trade Data", full.names = TRUE)
+
+trade = tibble()
+for (i in 1:length(filelist)) {
+          file_i = read_csv(filelist[i], col_types = cols(.default = "c")) %>%
+          select(Year,
+                 `Trade Flow`, 
+                 `Reporter`,
+                 `Reporter ISO`, 
+                 Partner, 
+                 `Partner ISO`, 
+                 `Commodity Code`, 
+                 `Commodity`, 
+                 `Trade Value (US$)`)
+     trade = rbind(trade, file_i)
+}
+
+trade = trade %>% 
+     arrange(Reporter, `Commodity Code`, Partner, `Trade Flow`) %>%
+     transmute(reporter_code = `Reporter ISO`,
+               reporter = Reporter,
+               partner_code = `Partner ISO`,
+               partner = Partner,
+               commodity_code = `Commodity Code`,
+               commodity = Commodity,
+               trade_flow = `Trade Flow`, 
+               trade_value = as.numeric(`Trade Value (US$)`),
+               year = as.integer(Year)) %>%
+     filter(partner != "World") %>%
+     spread(key = trade_flow, value = trade_value) %>%
+     rename(exports = Export, imports = Import)
+```
+
+### Load GDP data
+
+```{r, message = FALSE, warning = FALSE}
+gdp = read_tsv("Distance and GDP Data/UNSD_GDP_data.txt", col_names = TRUE) %>%
+     select(`Country or area`, Year, `Gross Domestic Product`) %>%
+     transmute(country = `Country or area`,
+               year = Year,
+               gdp = as.numeric(`Gross Domestic Product`))
+```
+
+Check if there's missing GDP data for each reporter in the trade data:
+
+```{r}
+trade %>% group_by(reporter) %>%
+     summarize(unique = n_distinct(reporter)) %>%
+     left_join(select(gdp, "country", "gdp"), by = c("reporter" = "country")) %>%
+     filter(is.na(gdp))
+```
+
+Show data sets:
+
+```{r}
+trade
+gdp
+```
+
+## Examples of SQL-like queries with dplyr
+
+### Top 10 exporters
+Values in USD bn
+```{r}
+trade %>% group_by(reporter) %>% 
+     summarize(exports = sum(exports, na.rm = TRUE)/1e9) %>%
+     arrange(desc(exports)) %>% 
+     head(10)
+```
+
+### Countries with the largest trade surpluses
+Values in USD bn
+```{r}
+trade %>% group_by(reporter) %>% 
+     summarize(exports = sum(exports, na.rm = TRUE)/1e9,
+               imports = sum(imports, na.rm = TRUE)/1e9) %>%
+     mutate(surplus = exports - imports) %>%
+     select(reporter, surplus, exports, imports) %>%
+     arrange(desc(surplus)) %>% 
+     head(10)
+```
+
+### Countries with the largest trade deficits relative to GDP
+
+```{r}
+trade %>% group_by(reporter) %>% 
+     summarize(exports = sum(exports, na.rm = TRUE),
+               imports = sum(imports, na.rm = TRUE)) %>%
+     inner_join(select(gdp, "country", "gdp"), by = c("reporter" = "country")) %>%
+     mutate(deficit = imports - exports,
+            deficit_share = (imports - exports)/gdp) %>%
+     arrange(desc(deficit_share)) %>%
+     head(10)     
+```
+
+These countries are mostly small island nations.
+
+### Top 10 most open economies
+Openness is defined as (imports+exports)/GDP
+```{r}
+trade %>% group_by(reporter) %>% 
+     summarize(exports = sum(exports, na.rm = TRUE),
+               imports = sum(imports, na.rm = TRUE)) %>%
+     inner_join(select(gdp, "country", "gdp"), by = c("reporter" = "country")) %>%
+     mutate(openness = (imports + exports)/gdp) %>%
+     select(reporter, openness) %>%
+     arrange(desc(openness)) %>%
+     head(10)   
+```
+
+### Top 10 exports from Argentina to Chile
+Values in USD mn
+```{r}
+trade %>% filter(reporter == "Argentina", partner == "Chile") %>%
+     group_by(commodity) %>%
+     summarize(exports = sum(exports, na.rm = TRUE)/1e6) %>%
+     arrange(desc(exports))
+```
+
+### Exports and imports of a small pacific island nation: Samoa
+Values in USD mn
+```{r}
+trade %>% filter(reporter == "Samoa") %>%
+     group_by(commodity) %>%
+     summarize(exports = sum(exports, na.rm = TRUE)/1e6) %>%
+     arrange(desc(exports)) %>%
+     head(5)
+
+trade %>% filter(reporter == "Samoa") %>%
+     group_by(commodity) %>%
+     summarize(imports = sum(imports, na.rm = TRUE)/1e6) %>%
+     arrange(desc(imports)) %>%
+     head(5)
+```
+
+### Top traded commodities, total
+Values in USD bn
+```{r}
+trade %>% group_by(commodity) %>%
+     summarize(trade = sum(exports, na.rm = TRUE)/1e9) %>%
+     arrange(desc(trade)) %>%
+     head(10)
+```
+
+
+## Estimate gravity model
+
+### Load distance data
+```{r}
+#TBD
+```
+
+### Merge distance with trade and pairwise GDP data
+```{r}
+#TBD
+```
+
+### Estimation of the model
+```{r}
+#TBD
+```
+
+## Save trade data for use in other programs like Tableau for visualization
+```{r}
+save(trade, file =  "world trade data.rda")
+```
